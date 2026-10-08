@@ -1,0 +1,206 @@
+---
+title: "Tutorial 2: Bias due to measurement error and how to account for it"
+author: "Martijn van de Pol & Lyanne Brouwer"
+date: "7/15/2021"
+output: word_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Aim
+In this Tutorial we show how to create dynamic models that account for measurement error in either X or Y. This Tutorial builds on Tutorial 1.
+
+# Content
+Structure of code document. It is divided into four sections (sections 1-2 are the same as in Tutorial 1): 
+
+1. Define the parameters and values used to generate the data for the trade-off, group living & density dependence example
+2. Load the functions needed to simulate the data and supporting R packages used by these functions
+3. Run all code, but in contrast to Tutorial 1 we now add measurement error in X or Y and specifically compare the bias in models that do not to the bias in DYN_SEM models that do account for such error. 
+4. Explain how the DYN_SEM+ model that account for measurement error looks like.
+
+
+# 1. Define and set all parameter values used to generate the simulated datasets
+```{r parameter values}
+TYPES<-c("TRADEOFF", "GROUP", "DENSDEP") # the possible data generating models
+TYPE<-"TRADEOFF"       # select either TRADEOFF, GROUP or DENSDEP, examples 1-3 in main text, our approach can only consider one of the three examples at a time
+Subject_trials<-100  # vector of the number of subjects that is considered in the simulted data
+Timesteps_trials<-10  # time series length that is considered in the simulted data
+SampleSize<-1000  # we have put it to 1000 here to speed up running the code, but in the simulations we set it to 50000
+HETEROGENEITY<-TRUE  # if true (default), among subject heterogeneity is included in the data generating process
+MEASUREMENT_ERROR<-"X"    # we can add measurement error on X, Y or NONE (default)
+LABEL<-"outputfilename"  # name of the outputfile that saves the results, by default a timestamp will be added  
+
+# parameters values used in generation of simulated datasets, see Box 1 in main text for equations, the first value is for the trade-off, the second value for the group living and third value for the density dependence example.
+ParA<-c(0,55,0.55)       
+ParB<-c(-0.1,0.025,-0.0005)   # effect of interest: effect of  X on Y
+ParC<-c(0,0,0) 
+ParD<-c(-0.5,1,1) # cross-lag: if ParD=0, then there is no cross-lag
+ParG<-c(0,0.5,0.5) 
+ParF<-c(1,1,1)
+ErrorEpsilon<-c(0.1,5,0.05) # residual noise in Y
+ErrorKappa<-c(0.1,5,1.5)    # residual noise in X
+ErrorLambda<-c(0.1,0.1,0.05) # residual noise in Z
+VarianceNu<-c(0.4,0.016,0.001) # among subject variance (heterogeneity) in X (TRADEOFF) or Z (GROUP or DENSDEP)
+VarianceMu<-c(0.4,10,0.001) # among subject variance(heterogeneity) in Y
+CovarMuNu<-c(0.2,0.2,0.0005)  # among subject covariance
+POP<-100   # initial population/group size at timestep=1 for DENSDEP and GROUP scenario
+Reliability<-0.75  # determines measurement error, i.e. correlation between two measurements. If MEASUREMENT_ERROR!="NONE" the value is automatically set to 1 when generating the data.
+```
+
+# 2. Load six functions to generate the data, format it in different ways, generate model structures for Lavaan and Stan, and summarize the output from analyses
+We  load these functions using:   
+```{r load functions and libraries, warning=FALSE, message=FALSE}
+# 1. a list of libraries used in the analyses
+library(rstan)   # R package to run Bayesian models in Stan. we note that this package require some specific installation, see https://github.com/stan-dev/rstan/wiki/RStan-Getting-Started
+library(shinystan)  # to explore stan model output 
+library(lme4) # to run frequentist static models
+library(lavaan) # to run frequentist dynamics models
+# below various libraries that provided useful functions to run our code
+library(mvtnorm) 
+library(plyr)
+library(gtools)
+library(climwin)
+library(clipr)
+source("simulation_functions.R")
+```
+# 3. Generate the data and run the different statistical models
+
+In contrast to Tutorial 1 we now add measurement error in X or Y and specifically compare the bias in models that do not to DYN_SEM models that do account for such error (i.e. DYN_SEM_PLUS, see Box 3 in the paper). 
+
+## Generating the data and running DYN_SEM_PLUS
+
+Below we generate some data with measurement error in X and compare the bias in estimate for parameter b for the DYN_SEM and DYN_SEM_PLUS model. 
+We note that in the paper we have shown that for the number of subjects and timesteps that we use here (100 subjects, 10 timesteps) the DYN_SEM should produce unbiased estimates of b when there is no measurement error. The question at hand is thus whether the addition of measurement error in X introduces bias to DYN_SEM and if so whether DYN_SEM+ model is unbiased. 
+
+```{r run simulations d, warning=FALSE}
+MEASUREMENT_ERROR<-"X"
+overviewX<-run_sims(STAN=FALSE, SEPARATE=FALSE)
+print(overviewX)
+```
+
+From the output we can see that DYN_SEM_PLUS model is virtually unbiased (more replicates would make the estimate of bias more precise and likely closer to 0%), while the DYN_SEM model is now strongly upward biased (closer to zero).
+
+We can also look at the bias when b is +0.1 instead of -0.1
+```{r run simulations e, warning=FALSE}
+ParB[which(TYPES==TYPE)]<-0.1  # set value of b to +0.1 instead of -0.1
+overviewX2<-run_sims(STAN=FALSE, SEPARATE=FALSE) 
+print(overviewX2)
+```
+This output again shows that DYN_SEM_PLUS is virtually unbiased, but that DYN_SEM now underestimates b considerably (closer to zero). The fact that DYN_SEM produces estimates of b that are closer to zero in the presence of measurement error in X is to be expected due to regression dilution/attenuation. 
+
+
+Finally, we can also run the models for a situation with measurement error in Y: 
+```{r run simulations f, warning=FALSE}
+MEASUREMENT_ERROR<-"Y"
+SampleSize<-5000
+overviewY<-run_sims(STAN=FALSE, SEPARATE=FALSE)
+print(overviewY)
+```
+This shows that measurement error in Y does not cause bias in b, not even in the DYN_SEM.  
+By varying (i) whether there is measurement error in X or Y, and (ii) the value of b, we can reproduce Fig. Box 3-2a from the main text.
+
+
+# 4. Explanation of the model strucuture of the DYN_SEM model in lavaan
+
+We can look at what the lavaan model structure looks like for the DYN_SEM_PLUS model that is used to account for measurement error in X or Y. Let's first remind us what the regression equations are for the DYN_SEM_PLUS model in case of the trade-off example that we focus on here in our tutorial. From Fig. Box 3-1 in the paper we can see that our DYN_SEM_PLUS model expands on  the DYN_SEM by including two latent variables X' and Y':
+
+```{r run simulations a, echo=FALSE, fig.cap="Fig. Box3-1", out.width = '100%'}
+knitr::include_graphics("Fig_tutorial2.png")
+```  
+
+These two latent variables X' and Y' are informed by observed variables X and Y respectively. X and Y have error terms that equal their measurement error. We assume this measurement error is known from external data sources. For example, variable X in the trade-off example we consider here can be the somatic growth over a given period, defined by the change in body mass of an organism. If the organism is small it can be hard to measure their mass precisely, because scales have rounding errors, or may be affected by wind in the field. To account for such sources of measurement variation, one could conduct growth measurements twice on each occasion, and then determine the correlation between these two repeated measurements. If there is no measurement error then the correlation should be 1, but often we find that the correlation is less than one. In the dataset we have set this correlation (also called Reliability) to be 0.75. From this we can calculate the measurement error as being (1-Reliability)*variance(X). Because in our data simulations we have set the variance (X) equal to one, the measurement error is simply equal to 1-Reliability=0.25. 
+
+
+Next we can look at the code for the DYN_SEM_PLUS model for trade-off example for lavaan when aiming to account for measurement error in X:   
+```{r run simulations b}
+lavaanModel<-lavaan_model(TYPE=TYPE, Timesteps=Timesteps_trials, ERROR=MEASUREMENT_ERROR)
+print(lavaanModel)
+```   
+We will explain step by step how each expression in the lavaan code is linked to the DYN_SEM_PLUS model described in Fig. Box3-1 in the paper. We will first explain how to account for measurement error in X, then for measurement error in Y, which could be combined to arrive at the model shown in Fig. Box 3-1 in the paper and shown above.
+
+In our lavaan code the first 10 expressions code for the latent variable X', which we here coded as xL. 
+
+xL1 =~ 1 * x1
+
+xL2 =~ 1 * x2
+
+...
+
+xL10 =~ 1 * x10                                       
+
+
+The next two expressions code for the random subject intercepts in the model for variables Y and X' respectively, by constructing latent variables Mu and Nu:
+
+Mu =~ 1 * y1  + 1 * y2 + .... + 1 * y10 
+
+Nu =~ 1 * xL1 + 1 * xL2 + .... + 1 * xL10 
+
+These two random intercepts for subject have a variance to be estimated: varMu and varNu, which is coded by the next two expressions: 
+
+Mu ~~ varMu * Mu 
+
+Nu ~~ varNu * Nu 
+
+These subject random effects may also covary, and in the next expression we specify that we are interested in estimating the covariance between Mu and Nu (among-subject covariance between Y and X; reproduction and growth, e.g. due to some individuals being better foragers allowing them to both grow and reproduce more than other individuals):
+
+Mu ~~ covMuNu * Nu 
+
+The next ten expressions describe the fixed part of the regression equation for Y, and how it depends on X' via coefficient of interest b (and an intercept is also included):
+
+y1 ~ inty * 1 + b * xL1
+
+y2 ~ inty * 1 + b * xL2
+
+...
+
+y10 ~ inty * 1 + b * xL10
+
+The next ten expressions describe the fixed part of the regression equation for X', and how it depends on Y via cross-lag coefficient d:
+
+xL1 ~ intx1 * 1
+
+xL2 ~ intx * 1 + d * y1 
+
+...
+
+xL10 ~ intx * 1 + d * y10 
+
+Note that in all above expressions we have replaced x by xL, the latent variable that is informed by X. 
+
+Finally, we need to estimate the residual error terms for Y and X':
+
+y1 ~~ vary * y1
+
+y2 ~~ vary * y2
+
+...
+
+y10 ~~ vary * y10
+
+xL1 ~~ varx1 * xL1
+
+xL2 ~~ varx * xL2
+
+...
+
+x10 ~~ varx * x10 
+
+Again note that for timestep 1 for X (xL1) we estimate the variance with a different parameter (varx1) than for the later timesteps (varx), because we are missing the data on the lagged predictor variables for the first time step of X meaning that there will be more residual variance. 
+
+The final expressions tell the model how much measurement error we think there is in X. It does so by fixing the variance of X to be equal to (1-Reliability)*variance(X), which equals 0.25 in all our data simulations. 
+
+x1 ~~ 0.25 * x1
+
+x2 ~~ 0.25 * x2
+
+...
+
+x10 ~~ 0.25 * x10
+
+If we would want to account for measurement error in Y instead of X, the DYN_SEM_PLUS model in lavaan looks like: 
+```{r run simulations c}
+lavaanModel<-lavaan_model(TYPE=TYPE, Timesteps=Timesteps_trials, ERROR="Y")
+print(lavaanModel)
+```   
+
+The structure is very similar to the DYN_SEM_PLUS model for measurement error in X, other than that we now have a latent variable Y' (yL) instead of X' (xL).

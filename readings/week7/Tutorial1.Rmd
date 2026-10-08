@@ -1,0 +1,306 @@
+---
+title: "Tutorial 1: Estimation bias in simulated dataset "
+author: "Martijn van de Pol & Lyanne Brouwer"
+date: "7/15/2021"
+output: word_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+# Aim
+In this Tutorial we show how to generate datasets of known effect size using simulation, construct static and dynamic models to analyze these datasets, and determine the bias that estimators in these models have for the contemporaneous effect of interest (parameter b in Box 1 in the main text). We will consider the three examples described in the main text on life-history trade-offs, density dependence and group living. 
+
+# Content
+Structure of code document. It is divided into four sections: 
+
+1. Define the parameters and values used to generate the data for the trade-off, group living & density dependence examples.
+2. Load the six different functions needed to simulate the data and run the analyses and the supporting R libraries needed in subsequent sections. 
+3. Run the data generating function, analyze it with different static and dynamics models and save a summary of the results to a file.   
+4. Explanation of the data input format and model structure used for lavaan and Stan models. 
+
+
+# 1. Define and set all parameter values used to generate the simulated datasets
+```{r parameter values}
+TYPES<-c("TRADEOFF", "GROUP", "DENSDEP") # the possible data generating models
+TYPE<-"TRADEOFF"       # select either TRADEOFF, GROUP or DENSDEP, examples 1-3 in main text, our approach can only consider one of the three examples at a time
+Subject_trials<-c(1,10,100,1000)  # vector of the number of subjects that is considered in the simulted data
+Timesteps_trials<-c(5,10,20,40,80)  # time series length that is considered in the simulted data
+SampleSize<-10  # we have set it to 10 here to speed up running the code, but in the simulations we set it to 50000
+HETEROGENEITY<-TRUE  # if true (default), among subject heterogeneity is included in the data generating process
+MEASUREMENT_ERROR<-"NONE"    # we can add measurement error on X, Y or NONE (default)
+LABEL<-"outputfilename"  # name of the outputfile that saves the results, by default a timestamp will be added  
+
+# parameters values used in generation of simulated datasets, see Box 1 in main text for equations, the first value is for the trade-off, the second value for the group living and third value for the density dependence example.
+ParA<-c(0,55,0.55)       
+ParB<-c(-0.1,0.025,-0.0005)   # effect of interest: effect of  X on Y
+ParC<-c(0,0,0) 
+ParD<-c(-0.5,1,1) # cross-lag: if ParD=0, then there is no cross-lag
+ParG<-c(0,0.5,0.5) 
+ParF<-c(1,1,1)
+ErrorEpsilon<-c(0.1,5,0.05) # residual noise in Y
+ErrorKappa<-c(0.1,5,1.5)    # residual noise in X
+ErrorLambda<-c(0.1,0.1,0.05) # residual noise in Z
+VarianceNu<-c(0.4,0.016,0.001) # among subject variance (heterogeneity) in X (TRADEOFF) or Z (GROUP or DENSDEP)
+VarianceMu<-c(0.4,10,0.001) # among subject variance(heterogeneity) in Y
+CovarMuNu<-c(0.2,0.2,0.0005)  # among subject covariance
+POP<-100   # initial population/group size at timestep=1 for DENSDEP and GROUP scenario
+Reliability<-1  # determines measurement error, i.e. correlation between two measurements. If MEASUREMENT_ERROR!="NONE" the value is automatically set to 1 when generating the data.
+
+# some RStan parameters (used in section 3)
+StanIter<-1000  # number of iterations in Stan
+StanChains<-1 # number of chains in Stan
+```
+
+# 2. Load seven functions to generate the data, format it in different ways, generate model structures for Lavaan and Stan, and summarize the output from analyses
+There are seven functions used to perform the analysis:
+
+  a. run_sims function - generates the data, applies the static and dynamics models and calculcates their estimator bias for parameter of interest b. THis is a wrapper functions based on the six functions described below. 
+  b. generate_data function - creates a dataset using the data generating functions described in Box 1 of the main text. It creates one dataset for a given number of replicates, subjects, time series length and the type of data structure (trade-off, group living or density dependence example)
+  c. lavaan_data function -  transforms above data into the wide data format required by the Lavaan package for 1 replicate
+  d. stan_data function - transforms above data (see point a) into the list data format required by the RStan package for 1 replicate
+  e. lavaan_model function - produces the structure of the lavaan model, given the number of time steps, subjects and example dataset (trade-off, group living or density dependence example)  
+  f. stan_modelfunction - produces the structure of the stan model, given the number of timesteps, subjects and example dataset
+  g. summarize_output function - summarizes the output of different statistical models and averages them over all replicates
+  
+We  load these functions and the libraries on which they are based using:   
+```{r load functions and libraries, message=FALSE, warning=FALSE}
+# a list of libraries used in the analyses
+library(lme4) # to run frequentist static models
+library(lavaan) # to run frequentist dynamics models
+library(rstan)   # R package to run Bayesian models in Stan. we note that this package require some specific installation, see https://github.com/stan-dev/rstan/wiki/RStan-Getting-Started
+library(shinystan)  # to explore stan model output 
+# and  various other libraries that provide useful functions to run our code
+library(mvtnorm) 
+library(plyr)
+library(gtools)
+library(climwin)
+library(clipr)
+
+# next we load the seven functions described above
+source("simulation_functions.R")
+```
+
+# 3. code that runs the functions that generate the data and models, runs the different statistical models and summarizes and stores the results on bias
+We can generate simulated datasets of known effect size and determine both the absolute bias (estimate of b - true values of b, averaged over all replicates) as well as the relative bias ((estimate of b - true values of b)/true value of b), averaged over all replicates) from different methods.   
+Below we show how to do this for a small number of replicates (SampleSize=100). Note that in all our simulations used in the paper we set the SampleSize variable to 50000, which takes much longer to run. Furthermore, for the analysis in our paper we considered a wider range of Subjects/number of time series (Subject_trials<-c(1,10,100,1000), see Section 1) and a wider range of time series length (Timesteps_trials<-c(5,10,20,40,80)), but here we only consider a subset for illustrative purposes as otherwise it would take long to run.   
+```{r run simulations g, warning=FALSE}
+Subject_trials<-c(10)
+Timesteps_trials<-c(5,10)
+SampleSize<-50
+overview<-run_sims(STAN=FALSE, SEPARATE=FALSE) 
+print(overview)
+```
+When running the run_sims() function screenprints show what percentage of simulations has finished. 
+
+The output of this function gives us the bias of the different models applied to the dataset. Note that each method occurs twice in the first column as we supplied the function with a vector of Timesteps_trials and thus there are two levels of number of timesteps. We could also run the DYN_SEM using a Bayesian approach with Stan by setting the argument STAN=TRUE in the run_sims() function. Similarly we could also run the STAT_WITHIN_SEPERATE method 
+mentioned in the output to analyze each time series seperately and then take the average estimate of b across all subjects, which can be seen as a two-step version of the STAT_WITHIN model (running STAT_WITHIN_SEPERATE requires putting the SEPARATE argument to TRUE in the run_sims() function). The method DYN_SEM_PLUS_LAVAAN is NA if variable MEASUREMENT_ERROR == "None". If we set MEASUREMENT_ERROR == "X" or MEASUREMENT_ERROR == "Y" we also get the output for a DYN_SEM in lavaan that accounts for measurement error (see Tutorial 2).
+
+Shown in the next columns is the median absolute bias, the median relative bias, the mean absolute bias, the mean relative bias and the quantiles of the bias across all replicates. The bias values shown above are not reliable, as the number of replicates was kept low in this illustration to reduce the computational time. 
+
+The columns after the bias values store whether (i) the effect of Xt on Yt (regression parameter B) was significant in the same direction as the sign of ParB (SignCorr), (ii) was statistically non-significant at the alpha=0.05 level (NonSign), or (iii) was significant in the direction opposite to the sign of ParB (SignOppo). Note that ParB contains the value of parameter B that was used to generate the data (the true value).  
+These three variables are useful for power-analysis, as for example the value of SignCorr helps us determine how likely it is that one will detect a statistically significant effect of Xt on Yt for a given value of parB, number of subjects, time series length and other parameter values (the value of SignCorr gives us the power (%) to detect an effect).  
+
+Finally, in the last columns of the output we see the parameter values used to generate the data.
+
+By running these simulation for (i) different TYPE (TRADEOFF, GROUP or DENSDEP), (ii) different number of Subject_trials (subjects), (iii) different number of Timesteps_trials (timeseries length) and (iv) different parameter values for parB, parD and covarMuNu, we obtained all results shown in Fig. 2 and Fig. 3 in the main text.
+
+
+# 4. Explanation of the data input format and model structure used for lavaan and Stan models. 
+In this section follows an explanation of what the data format and model structure looks like for both the static and dynamic models being run with either lavaan (frequentist) or Stan (Bayesian). This explanation can be useful for understanding as well as for those who would like to tweak the code to fit slightly different model structures relevant for other biological examples, however it is not needed to read this part for determining bias, as the above 3 sections already covered this. Note that the run_sims() function used in section 3 builds on some of the function used in this section 4.
+
+For a given data generating process (i.e. TYPE="TRADEOFF" or TYPE="GROUP" or TYPE="DENSDEP", we consider all combinations of number of subjects and time steps that are given in the vectors Subject_trials and Timesteps_trials in the parameter values section. We assume readers will be familiar with the data format and model description used in static regression models that can be implemented in e.g. lme4, so will look at what the simulated datasets look like in a format that is suitable for use by lme4 or any other package for univariate regression modelling.
+```{r run simulations a}
+# we use a small number number of subjects, timesteps and replicates here to generate a small dataset to illustrate what it looks like
+TYPE<-"GROUP" 
+subjects_TEST<-10
+Timesteps_TEST<-5
+Replicates_TEST<-2
+datalong<-generate_data(TYPE=TYPE, subjects=subjects_TEST, Timesteps=Timesteps_TEST, Replicates=Replicates_TEST, HETEROGENEITY=HETEROGENEITY, MEASUREMENT_ERROR=MEASUREMENT_ERROR, parB=ParB[which(TYPES==TYPE)], parD=ParD[which(TYPES==TYPE)], parA=ParA[which(TYPES==TYPE)], parC=ParC[which(TYPES==TYPE)],  parF=ParF[which(TYPES==TYPE)], parG=ParG[which(TYPES==TYPE)], errorEpsilon=ErrorEpsilon[which(TYPES==TYPE)], errorLambda=ErrorLambda[which(TYPES==TYPE)], errorKappa=ErrorKappa[which(TYPES==TYPE)], covarMuNu=CovarMuNu[which(TYPES==TYPE)], varianceNu=VarianceNu[which(TYPES==TYPE)], varianceMu=VarianceMu[which(TYPES==TYPE)], POP=POP)
+head(datalong)
+```
+We can see that our data is stored in a three dimensional array, in which the third dimension codes for the replicate number. In the first two dimensions of the array we can see a record for each time step for each subject with the simulated variables X, Y, Z (Z is NA in the Trade-off example), the subjectIDs and timestep and a long list of derived variables. For example, derived variables labeled "lagged" are the values from the same subject one timestep earlier (and is thus missing if timestep=1). Derived variables labeled deviation are within-subject centred (e.g. devationX=X-SubjMeanX, where SubjMeanX is the mean of X for subject s). XY equals X*Y, while MeanX is the grand mean of X across all subjects and timesteps, etcetera.
+
+## Explanation of the data format used by lavaan and Stan to model the DYN_SEM
+This above dataset is in a long data format, which can be used for example by lmer() function from lme4 package. However, if we want to run the DYN_SEM model in lavaan we need to transform it to the wide format.
+```{r run simulations b}
+lavaanData<-lavaan_data(data=as.data.frame(datalong[,,1]), Timesteps=Timesteps_TEST, subjects=subjects_TEST, TYPE=TYPE)   
+head(lavaanData)
+```
+Now each row is one subject with y1-y5 coding for the values of y in timesteps 1-5, x1-x5 coding for the values of x in timesteps 1-5, and z1-z5 coding for the values of z in timesteps 1-5. If we would have simulated more time steps, the data frame would have been wider. Also note that when running the code onselves, the generated data will differ as they are generated using random variable functions. 
+
+Lavaan uses a frequentist approach to analyzing DYN_SEM. If we want to analyzing the DYN_SEM using Bayesian approach with Stan we need yet another format. 
+```{r run simulations c}
+stanData<-stan_data(data=as.data.frame(datalong[,,1]), subject=subjects_TEST)       # transform output dataset into Stan format
+stanData
+```
+The StanData is in the format of a list, with elements 'subj', 'X', 'Y' and 'Z' just being the corresponding columns from the long format dataset, and N, L & S give the total sample size (N=5*10=50 here), the time series length (L=5) and number of subjects (S=10).
+
+## Explanation of the model description format used by lavaan and Stan to model the DYN_SEM
+Next we can check what the lavaan and Stan model structure looks like for the DYN_SEM. Let's first remind us what the regression equations are for the DYN_SEM model in case of the group living example that we focus on here in our tutorial. From Box 2d-ii in the paper we can see that our DYN_SEM model aims to describe three response variables:
+```{r run simulations d, echo=FALSE, fig.cap="Fig. Box2d-ii", out.width = '100%'}
+knitr::include_graphics("Fig_tutorial1.png")
+```  
+
+Next we can look at the code for the DYN_SEM model for group living for lavaan:   
+```{r run simulations e}
+lavaanModel<-lavaan_model(TYPE, Timesteps_TEST)
+print(lavaanModel)
+```   
+We will explain step by step how each expression in the lavaan code is linked to the DYN_SEM model described in the graphical path diagram of the model from the paper (and also shown above).
+In our lavaan code the first three expressions code the random subject intercepts in the model for variables Y Z and X respectively, by constructing latent variables Mu, Nu and Ksi:
+
+Mu =~ 1 * y1  + 1 * y2 + 1 * y3 + 1 * y4 + 1 * y5 
+
+Nu =~ 1 * z1  + 1 * z2 + 1 * z3 + 1 * z4 + 1 * z5 
+
+Ksi =~ 1 * x1 + 1 * x2 + 1 * x3 + 1 * x4 + 1 * x5 
+
+These three random intercepts for subject have a variance to be estimated: varMu, varNu and varKsi, which is coded by the next three expressions: 
+
+Mu ~~ varMu * Mu 
+
+Nu ~~ varNu * Nu 
+
+Ksi ~~ varKsi * Ksi                  
+
+These subject random effects may also covary, and in the next three expressions we specify that we are interested in estimating the covariance between Mu and Nu (among-subject covariance between Y and Z; reproduction and survival, e.g. due to some groups living in territories with much food, which allows them to both reproduce and survive well), but assume that group size does not covary with reproduction and survival (beyond the correlation that may exist caused by the covariance between Y and Z):     
+
+Mu ~~ covMuNu * Nu 
+
+Mu ~~ 0 * Ksi
+
+Nu ~~ 0 * Ksi 
+
+The next five expression describe the fixed part of the reqression equation for Y, and how it depends on X via coefficient of interest b (and an intercept is also included):
+
+y1 ~ inty * 1 + b * x1
+
+y2 ~ inty * 1 + b * x2
+
+y3 ~ inty * 1 + b * x3
+
+y4 ~ inty * 1 + b * x4
+
+y5 ~ inty * 1 + b * x5
+
+The next five expression describe the fixed part of the reqression equation for X, and how it depends on Y via cross-lag coefficient d (and an intercept term and the auto-lag term Z*X is also included):
+
+x1 ~ intx1 * 1
+
+x2 ~ intx * 1 + d * y1 + f * z1 : x1
+
+x3 ~ intx * 1 + d * y2 + f * z2 : x2
+
+x4 ~ intx * 1 + d * y3 + f * z3 : x3
+
+x5 ~ intx * 1 + d * y4 + f * z4 : x4
+
+Note that in above regression equations the predictor variables are lagged (x2~y1), and this explains why for the first time step there is only an intercept, as there is no data on the predictor values in the previous time step then (note that the intercept coefficient for the first time-step (intx1) is a different regression parameter than the intercept in later timesteps (intx)!).  Lavaan uses the semicolon (:) to indicate an interaction between variables (here z and x).
+
+And for the z variable, we simply assume this only depends on an intercept: 
+
+z1 ~ intz * 1
+
+z2 ~ intz * 1
+
+z3 ~ intz * 1
+
+z4 ~ intz * 1
+
+z5 ~ intz * 1
+
+Finally, we need to estimate the residual error terms for Y, X and Z:
+
+y1 ~~ vary * y1
+
+y2 ~~ vary * y2
+
+y3 ~~ vary * y3
+
+y4 ~~ vary * y4
+
+y5 ~~ vary * y5
+
+x1 ~~ varx1 * x1
+
+x2 ~~ varx * x2
+
+x3 ~~ varx * x3
+
+x4 ~~ varx * x4 
+
+x5 ~~ varx * x5 
+
+z1 ~~ varz * z1
+
+z2 ~~ varz * z2
+
+z3 ~~ varz * z3
+
+z4 ~~ varz * z4
+
+z5 ~~ varz * z5
+
+Again note that for timestep 1 for X (x1) we estimate the variance with a different parameter (varx1) than for the later timesteps (varx), as we are missing data on the lagged predictor variables for the first time step of X meaning that there will be more residual variance. 
+
+Similarly, we can look at the StanModel description and relate it to the three regression equations that we described in Fig. Box2d-ii and that we also presented earlier in this tutorial: 
+```{r run simulations f}
+stanModel<-stan_model(TYPE, Timesteps_TEST, subjects_TEST)
+print(stanModel)
+```    
+We can rewrite this character string into a bit more convenient format to understand why the model looks like this:
+
+data {  
+  int<lower=1> N; //number of data points  
+  int<lower=1> S; //number of subjects  
+  int<lower=1> L; //number of timesteps  
+  vector [N] Y;   
+  vector [N] X;  
+  vector [N] Z; 
+}
+
+This first section above describes the variables in the data (see object stanData).
+
+parameters {  
+  vector[7] beta; //fixed intercept and slope first equation (Y~X)  
+  vector<lower=0>[4] sigma_e; // error sd of response variables    
+  real<lower=0> sigma_v; //sd of random intercept effect for X  
+  vector[S] eta;  
+  vector<lower=0>[2] sigma_u; //among subject sd  
+  cholesky_factor_corr[2] L_u;  
+  matrix[2,S] z_u;
+}
+
+The second section describes the parameters of the model.
+vector[7] beta -> describes the seven regression coefficients that are in the regression equations for X, Y and Z: we aim to estimate three parameters (b,d,f) and four intercepts (intercepts for Y,Z and X, with the intercepts for X varying between timestep 1 and later timesteps)     
+vector<lower=0>[4] sigma_e -> there are four error terms (for Y, Z and X, with the error term for X varying between timestep 1 and later timesteps). These error terms are constrained to be postive (lower=0). 
+real<lower=0> sigma_v & vector[S] eta -> describe the among-subject random intercept term for X
+vector<lower=0>[2] sigma_u &  cholesky_factor_corr[2] & L_u; matrix[2,S] z_u  -> describe the among-subject random intercept term for Y and Z and their covariance
+
+transformed parameters {  
+  matrix[2,S] u;  
+  vector[S] v;  
+  u = diag_pre_multiply(sigma_u, L_u) * z_u; //subj random effects  
+  v = sigma_v * eta;
+}
+
+The third section introduces some transformed parameters that we need to obtain estimates for the (co)variances of the random subject effects that we just defined. 
+
+model {  
+  //priors  
+  sigma_e ~ normal(0,1);  
+  beta ~ normal(0,2);  
+  L_u ~ lkj_corr_cholesky(2.0);  
+  to_vector(z_u) ~ normal(0,1);  
+  eta ~ normal(0,1);  
+  //likelihood  
+  for (s in 1:S) {
+    Y[(1+(s-1) * L):(L+(s-1) * L)] ~ normal(beta[1] + beta[2] * X[(1+(s-1) * L):(L+(s-1) * L)] + u[1,s], sigma_e[1]);     // equation 1      
+    X[(2+(s-1) * L):(L+(s-1) * L)] ~ normal(beta[3] + beta[4] * Y[(1+(s-1) * L):((L-1)+(s-1) * L)]+ beta[6] *  X[(1+(s-1) * L):((L-1)+(s-1) * L)].*Z[(1+(s-1) * L):((L-1)+(s-1) * L)] + v[s], sigma_e[2]); // equation 2f or t>1    
+    X[(1+(s-1) * L)] ~ normal(beta[5] + v[s], sigma_e[3]);  // equation for t=1    
+    Z[(1+(s-1) * L):(L+(s-1) * L)] ~ normal(beta[7] + u[2,s], sigma_e[4]);  }
+}
+
+The fourth model section first describes the priors used (which were set to be quite flat) for the residual error terms, the fixed effect coefficients and the among-subject (co)variance terms. 
+Next is the description of the model likelihood functions. We use a loop to loop across all subjects in the dataset. These equations show that we assume that X, Y and Z are generated by a gaussian process (normal) and directly reflect the regression equations from Fig. Box2d-ii, but again it should be noted that for timestep 1 for each subject we do not know how X depends on Y, Z and X in the previous timestep as this data is unavailable and thus a seperate regression expression is needed for the first timestep of X. Note that in Stan-language a product of two variables is denoted by ".*".
+
